@@ -1,0 +1,131 @@
+---
+title: "theses.fr"
+author: "Mathilde Mousset"
+date: "14 décembre 2018"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+
+library(tidyverse)
+library(hrbrthemes)
+library(lubridate)
+```
+
+
+
+# General information
+
+I downloaded all thesis defended in France and recorded on the <these.fr>[these.fr] datatabase on the 14 December 2018. This datafile does not take into account thesis that were never defended, or are still under completion to this date.
+
+I first did some benign cleaning (remove non data lines, repeated headers, convert dates into universal format etc.) and saved the clean data.
+
+
+```{r load_data}
+# Load data
+thesis <- read_csv2("./2_clean_data/thesis.csv")
+```
+
+
+There are PhDs with several authors, separated by commas. I filter them out.
+Then, we fix the advisor columns. Right now, the advisor 1 is XY and the advisor 2 is YX. When there are two (or more) advisors, their names are in the same column, separated by a comma.
+
+
+```{r}
+thesis_clean <- thesis %>% 
+  filter(!duplicated(thesis_id)) %>% 
+  filter(!str_detect(author, pattern = ",")) %>% 
+  select(-thesis_advisor2) %>% 
+  mutate(advisors = str_split(thesis_advisor1, ","))
+```
+
+
+
+# Some general numbers
+
+The number of thesis defended in France has decreased around the 2000, but rose again to similar level as before in the past decade.
+
+```{r}
+thesis_clean %>% 
+  ggplot(aes(x = year_defense)) +
+  geom_histogram(binwidth = 1) +
+  labs(title = "Number of PhD defended in France since 1986",
+       subtitle = "Why is there such a gap in the 2000 ?",
+       caption = "Source: theses.fr",
+       x = "Year of PhD defense",
+       y = "Number of thesis") +
+  theme_ipsum_rc()
+```
+
+
+Most PhDs have one or two supervisors. A couple have more.
+
+```{r}
+thesis_clean %>% 
+  mutate(n_authors = lengths(advisors)) %>%
+  count(n_authors) %>% 
+  mutate(proportion = 100 * n / sum(n))
+```
+
+
+There are about 2500 persons with two PhDs (based on author ID), whith is probably correct. Whether the people with four to six PhD represent a problem in author ID attribution, real PhDs, or crackpots who managed to get a varnish of science is hard to tell. 
+
+```{r}
+thesis_clean %>% 
+  # Remove authors with no ID
+  drop_na(author_id) %>% 
+  filter(author_id != ",") %>% 
+  count(author_id, sort = TRUE) %>% 
+  filter(n > 1) %>% 
+  ggplot(aes(x = n)) +
+  geom_histogram(binwidth = 1) +
+  coord_flip() +
+  labs(title = "Nb of people with more than one PhD",
+       subtitle = "",
+       x = "Number of PhDs",
+       y = "Number of people",
+       caption = "Source: theses.fr") +
+  theme_ipsum_rc()
+```
+
+
+# Number of thesis per supervisor
+
+While most people supervised or helped supervise a dozen of PhDs, a decent number of people supervised more than 20 PhDs, which I think as an awesome lot. In France, this is likely to depend on the field. In science doctoral schooln the number of PhD that a PI can supervise at any given time can be limited. I believe that it is a different culture in the humanities.
+
+
+```{r}
+thesis_clean %>% 
+  drop_na(thesis_advisors_id) %>% 
+  filter(!thesis_advisors_id == ",") %>% 
+  separate_rows(thesis_advisors_id, sep = ",") %>% 
+  drop_na(thesis_advisors_id) %>% 
+  group_by(thesis_advisors_id) %>% 
+  count(thesis_advisors_id, sort = TRUE) %>% 
+  filter(n < 500) %>% 
+  ggplot(aes(x = n)) +
+  geom_histogram(binwidth = 0.1) +
+  coord_flip() +
+   scale_x_continuous(trans = "log10") +
+     scale_y_continuous(trans = "log10") +
+  labs(title = "Number of PhD supervised by advisor",
+       subtitle = "Log10 scale",
+       x = "Number of PhDs",
+       y = "Number of advisor (or co-advisor)",
+       caption = "Source: theses.fr") +
+  theme_ipsum_rc()
+```
+
+
+
+# Questions
+
+Questions :
+
+- how many thesis per discipline
+- time series
+

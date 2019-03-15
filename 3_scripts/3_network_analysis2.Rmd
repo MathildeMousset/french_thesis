@@ -1,0 +1,454 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    fig_width: 8
+    toc: yes
+editor_options:
+  chunk_output_type: console
+---
+
+
+```{r setup, include=FALSE}
+library(rvest) # To scrap PhD pages to get committe members
+
+library(tidyverse)
+#library(scales) 
+library(hrbrthemes)
+#library(data.table)
+#library(bigreadr)
+
+library(igraph)
+library(ggraph)
+library(ggrepel)
+
+source("./3_scripts/4_functions.R")
+```
+
+Some time ago, I donwloaded the summary of all PhD thesis defended in France from 1986 and 2018, as they appear in the national database [these.fr]("these.fr"). One of the database, at least^[]("And I heard that the file has a slighly different number of lines than the file downloaded from HAL, another national archive, but I cannot find the discussion again").
+
+It is a big file, with 369554 lines (at the date I downloaded it), and there are many things to investigate with it. Today I will focus on a network analysis, inspired by the great posts of [Baptiste Coulmont]("coulmont.com/blog/2018/12/02/sociologue-reseau-theses-2018/") and [Olivier Gimenez]("https://oliviergimenez.github.io/post/network_ecology/"), who respectidly conducted such an analysis in social sciences and ecology. Being an evolutionnary biologist, I could not wait to perform one in evolution!
+
+I modified the code from Olivier Gimenez to apply it to French evolutionary biologists. Or rather, evolutionary biologists that are invlved in supervising and evaluating PhDs (whichdoes involve non-French scientists).
+
+# Get the data
+
+## Get PhD data
+
+I downloaded and cleaned the whole file from [theses.fr]("theses.fr") using the script **here**. Beware, it takes some time.
+
+```{r load_data}
+# Load data
+thesis <- read_csv2("./2_clean_data/thesis.csv")
+```
+
+
+## Get evolution-related PhD
+
+I want the PhD that were in the evolutionary field. It is a bit tricky because the field name (`discipline` in the file) depends on doctoral schools, and change every couple of years within doctoral school.
+
+I tried first filtering by discipline names that contain variation on the word evolution ("Évolut|Evolut|evolut|évolut|") using the `str_detect()` function from the excellent `stringr` package.
+
+We obtain a couple of fields that have nothing to do with evolutionary biology. For example, "evolution of terrestrial systems". Fortunately, the list of fields was not so long, and I manually filter out the fields that really do not belong (mostly geology and earth sciences).
+
+We can see that there are fields that include evolution but are much larger, such as "biological sciences and evolution", but I don't think much can be done about it.
+
+Then I noticed that I had very few PhDs from before 2000, so I spent a couple of minutes searching for the PI in my lab, and got some more fields to add. I am sure that we are missing ^[some people](I know of at least one, but the field is "biology", and really, it's too wide!), but I think we got the bulk of evolutionary biology PhDs.
+
+
+```{r thesis_evolution}
+thesis_evolution <- thesis %>% 
+  filter(str_detect(discipline, 
+                    pattern = "Évolut|Evolut|evolut|évolut|Genetique des populations") |
+           discipline %in% c("Physiologie et biologie des organismes et populations", "Biologie des populations et ecologie")) %>% 
+  drop_na(date_defense) %>% 
+  filter(!str_detect(discipline,
+                   pattern = "Terre|planete|lithos|geologie|Geologie|evolutionnaire|Materiaux|materiaux"))
+```
+
+
+We now have `r nrow(thesis_evolution)` PhD, from 1986 to 2018.
+
+We can look at the distribution of the year of defense: I don't know whether the lower number of defended PhDs in the late nineties are because of a large shift towards a different name for the fields or some real temporary loss of interest in evolutionary biology. I would wagger on the former.
+
+
+```{r}
+thesis_evolution %>% 
+  ggplot(aes(x = date_defense)) +
+  geom_histogram() +
+  theme_ipsum_rc() +
+  labs(title = "Nb of PhD defended in evolution, 1986 - 2018",
+       subtitle = "Obviously, some are missing",
+       x = "Year",
+       y = "Nb of defended PhD",
+       caption = "Data: theses.fr")
+```
+
+
+## Get advisor ans comittes data
+
+Now that we have the ID of the PhDs in this period related to evolution, we need to get the data about the advisors and the committee related to these PhDs. To do that, we need to scrap the webpage of each PhD (using the PhD ID) and we use the `rvest` package.
+
+```{r, eval = FALSE}
+thesis_id <- thesis_evolution$thesis_id # get PhD ids
+
+total_network <- data.frame(jury_members = "",
+                            jury_links = "",
+                            these      = "",
+                            directeurs = "",
+                            advisor_id = "")
+
+
+for (i in 1:length(thesis_id)) {
+  
+  # get info on current PhD
+  data_phd_evolution <- read_html(paste0("http://www.theses.fr/",
+                                      thesis_id[i]) ) 
+  
+  # get name PhD supervisor for 
+  directeurs <- bind_cols(
+    directeurs = data_phd_evolution  %>%
+      html_nodes("div .donnees-ombre p") %>%
+      .[[1]] %>%
+      html_nodes("a") %>%
+      html_text()
+    ,
+    advisor_id = data_phd_evolution  %>%
+      html_nodes("div .donnees-ombre p") %>%
+      .[[1]] %>%
+      html_nodes("a") %>%
+      html_attr(name="href")
+  ) %>% mutate(these = thesis_id[i])
+  
+  
+  # get names of people in commitees
+  jury <- bind_cols( 
+    jury_members = data_phd_evolution %>%
+      html_nodes("div .donnees p a") %>%
+      html_text()
+    ,
+    jury_links = data_phd_evolution %>%
+      html_nodes("div .donnees p a") %>%
+      html_attr(name="href")
+  ) %>% mutate(  these = thesis_id[i] )
+  
+  # put all together
+  network <- jury %>% left_join(directeurs,by="these") 
+  total_network <- bind_rows(total_network, network)
+}
+
+# Because the process is a bit long, we save the file
+save(thesis_evolution,
+     total_network,
+     file = "././2_clean_data/network_total.RData")
+```
+
+
+# Built network
+
+```{r load_full, echo=FALSE}
+load( "././2_clean_data/network_total.RData")
+```
+
+
+Baptiste Coulmont weighted the different types of links between collegues depending on their role in the PhD process.   
+- If two scientists co-supervise a PhD, the link has a weight of 3, because we assume that co-supervising a PhD student creates or is the consequence of a strong link.  
+
+- If one of them is a supervisor and the other is in the PhD commitee, the link has a weight 2, indicating a moderate link.   
+
+- If both researchers are in the same committee, the link is weighted by 1.  
+
+
+The weight of these links can be added (a lot of people are involved both in co-supervisionsa and committes).
+
+
+```{r give_weights}
+# Link supervisor - supervisor
+advisor_advisor <- total_network %>% 
+   mutate(directeurs = str_trim(directeurs)) %>% 
+  select(these, directeurs) %>% 
+  unique() %>% 
+  group_by(these) %>% 
+  mutate(N = n()) %>%
+  
+  filter(N == 2) %>% # keep co-supervision w/ 2 supervisors 
+  mutate(rang  = rank(directeurs)) %>% 
+  spread(key   = rang, 
+         value = directeurs) %>% 
+  
+  ungroup() %>% 
+  select(name_1 = `1`, name_2 = `2`) %>% 
+  mutate(poids = 3)
+
+
+# Link advisor - jury
+advisor_jury <- total_network %>% 
+  select(name_1 = jury_members,
+         name_2 = directeurs) %>% 
+  
+    mutate(name_1 = str_trim(name_1),
+           name_2 = str_trim(name_2)) %>% 
+  
+  filter( name_1 != "") %>%
+  mutate(poids = 2) %>%
+  group_by(name_1, name_2) %>% 
+  # Sum weight over links
+  summarize(poids = sum(poids))
+
+# Jury - jury links
+jury_jury <- total_network %>% 
+  select(jury_members,these) %>% 
+  unique() %>% 
+  filter(jury_members != "")
+```
+
+Here are what the files look like:   
+
+```{r}
+head(advisor_advisor)
+head(advisor_jury)
+head(jury_jury)
+```
+
+
+# Make graph
+
+Now we use the `graph_from_data_frame()` from the `igraph` package to create the graph.
+
+```{r jury_graph}
+# Make non-directed graph for jury_jury
+g_j <- graph_from_data_frame(jury_jury,
+                              directed = F)
+
+ 
+# Create the vertex sequence
+igraph::V(g_j)$type <- V(g_j)$name %in% jury_jury$jury_members
+
+g_j_1 <- bipartite_projection(g_j, which = "true")
+
+
+jurys <- as_long_data_frame(g_j_1) %>%
+  select(name_1 = `ver[el[, 1], ]`, 
+         name_2 = `ver2[el[, 2], ]`, 
+         poids  = weight)
+
+reseau_petit <- bind_rows(advisor_advisor,
+                          advisor_jury,
+                          jurys) %>%
+  group_by(name_1, name_2) %>% 
+  summarize(poids = sum(poids)) # data.frame from which the network will be created
+```
+
+# Plot the network
+
+We correlate the size of the point to *betweenness* of nodes. The width of edges correlates with the summed weight of the link between the two scientists (the strenght of their connection).
+We determine communities trough a [cluster_walktrap]("https://igraph.org/r/doc/cluster_walktrap.html") algorithm, but to be honest, it's mainly to add colour to the graph. The `cluster_walktrap()` function, from the `igraph` package tries to find densely connected subgraphs (communities) via random walks. The idea is that short random walks tend to stay in the same community. 
+
+
+```{r make_network}
+g <- graph_from_data_frame(reseau_petit, 
+                           directed = F) 
+
+g <- simplify(g, edge.attr.comb = sum)
+
+V(g)$degres <- degree(g)
+
+# Get surname only
+V(g)$label  <- gsub("^\\S+\\s+(.+)$","\\1",V(g)$name)
+
+
+# determine communities
+# step = the length of the random walk to perform
+V(g)$communaute <- as.character(cluster_walktrap(g,
+                                                 steps = 10)$membership)  # 15 originellement
+
+V(g)$closeness <- (5*closeness(g))^10
+
+# network metric betweeness
+V(g)$btwns       <- betweenness(g) 
+V(g)$eigen_centr <- eigen_centrality(g)$vector
+
+
+# delete edges with weight <= 4
+g <- delete_edges(g, which(E(g)$poids < 4)) # 5 initiallement
+
+
+# to which community you belong
+V(g)$cluster_number <- clusters(g)$membership 
+
+g <- induced_subgraph(g,
+                      V(g)$cluster_number == which( max(clusters(g)$csize) == clusters(g)$csize) )
+
+# width of edge proportional to weight
+E(g)$weight <- 1/E(g)$poids 
+
+
+# do not display all names
+V(g)$label <- ifelse(V(g)$degres < 8, 
+                     "", 
+                     V(g)$label)  # 20 initialement
+```
+
+
+
+```{r plot_all, fig.width=8}
+graphe_1 <- ggraph(g,
+                   layout = "igraph",
+                   algorithm = "fr") + 
+  
+  geom_edge_link(aes(width = 0.1*poids), alpha = 0.1, 
+                 end_cap   = circle(5, 'mm'), 
+                 start_cap = circle(5, 'mm')) +
+  
+  geom_node_point(aes(size = eigen_centr),
+                  color = "white", alpha = 1) +
+  
+  geom_node_point(aes(color = communaute,
+                      size = eigen_centr), 
+                  alpha = 0.5) +
+  
+  scale_size_area(max_size = 20) +
+  
+  geom_node_text(aes(label = label),
+                 size = 3, 
+                 repel = T,
+                 box.padding = 0.15) +
+  
+  labs(title = "Réseaux des évolutionistes",
+       subtitle="Soutenances de thèses entre 2015 et 2018",
+       caption="Sources : theses.fr \n Code par B. Coulmont, modifié par O. Gimenez") +
+  
+  theme_graph(foreground = 'white', fg_text_colour = 'white') +
+  
+  theme(legend.position = "none",
+        text = element_text(size = 16),
+        plot.margin = unit(c(0.2, 0.2, 0.2, 0.2), units = "line"))
+
+graphe_1
+
+# ggsave("network1.png",
+#        graphe_1,
+#        units = "cm",
+#        width = 30,
+#        height = 25)
+
+
+# png(filename = "network1.png",
+#      units = "cm",
+#        width = 30,
+#        height = 25)
+# graphe_1
+# dev.off()
+```
+
+
+That's a lot to digest.
+
+The first thing that I notice is internal: it is a particularly good feeling when you know the people that are on the graph.
+
+The second thing that I notice was a lack of connections between my two PhD supervisors. I dug a bit and realized, several years after defending my PhD that the data on the theses.fr is wrong, only one of my former advisor is listed. I asked for the correction, of course.
+
+I wish I could plot more names, but my computer crashes if I try to. Every. Single. Time. So we will have to do with this level of precision, at least with the full dataset.
+
+I can recognize groups of people whom I know work together, publish together, and have a scientific connection, which is quite reassuring. I am surprised that the spatial closeness is not always a good predictor of network: I was expecting people of Montpellier to be more close. But they are scattered all over the place. It means that we have many subfield represented here, and that scientists have a wide network in other labs in general.
+
+
+## Plot the network 2015 to 2018
+
+Because the dataset was so large, it is difficult to plot more names. So let's see what the network looks like in the past three years.
+
+I wrotte a couple of functions to perform the same scrapping as above and save some space. See **LINK** for the source file
+
+```{r source_functions}
+source("./3_scripts/4_functions.R")
+```
+
+```{r}
+thesis_evolution_2015_2018 <- thesis_evolution %>% 
+  filter(year_defense > 2014) 
+```
+
+We know have a data.frame with `r nrow(thesis_evolution_2015_2018)` lines.
+
+
+```{r scrap2015_2018, eval=FALSE}
+scrapped_2015_2018 <- scrap_phd_webpages(thesis_evolution_2015_2018)
+
+save(thesis_evolution_2015_2018,
+     scrapped_2015_2018,
+     file = "././2_clean_data/scrapped_2015_2018.RData")
+```
+
+
+```{r load_2015, echo=FALSE}
+load( "././2_clean_data/scrapped_2015_2018.RData")
+```
+
+
+
+```{r plot_2015_2018, fig.width= 8}
+graphe_2 <- make_network_full(scrapped_2015_2018,
+                  my_waltrap = 10,
+                  my_edge    = 3,
+                  my_degree  = 3,
+                  my_title   = "Network of evolutionary biologists",
+                  my_subtitle = "Based on French PhD advising and committes, 2015 - 2018")
+
+
+# png(filename = "network2.png", res = 100)
+#      #units = "cm", width = 30, height = 25, res = 300)
+# graphe_2
+# dev.off()
+```
+
+
+
+
+
+## Plot the network in Montpellier
+
+Since I did my PhD in Montpellier, I was very curious to see the local network.
+
+
+```{r}
+thesis_evolution_Montpellier <- filter(thesis_evolution,
+                             str_detect(university,
+                                        pattern = "Montpellier"))
+```
+
+
+```{r scrap_montpel, eval=FALSE}
+scrapped_Montpellier <- scrap_phd_webpages(thesis_evolution_Montpellier)
+
+save(thesis_evolution_Montpellier,
+     scrapped_Montpellier,
+     file = "././2_clean_data/scrapped_Montpellier.RData")
+```
+
+```{r load_montpel, echo = FALSE}
+load( "././2_clean_data/scrapped_Montpellier.RData")
+```
+
+
+```{r plot_montpell, fig.width=8}
+graphe_3 <- make_network_full(scrapped_Montpellier,
+                  my_waltrap = 7,
+                  my_edge    = 1,
+                  my_degree  = 2,
+                  my_title   = "Network of evolutionary biologists",
+                  my_subtitle = "Based on French PhD advising and committes, Montpellier")
+
+
+# png(filename = "network3.png")
+#      #units = "cm", width = 30, height = 25, res = 300)
+# graphe_3
+# dev.off()
+# 
+# ggsave("network3.png",
+#        graphe_3,
+#        units = "cm",
+#        width = 30,
+#        height = 25)
+```
+
+
