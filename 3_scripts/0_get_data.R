@@ -11,7 +11,7 @@ library(dplyr)
 library(purrr)
 library(lubridate)
 library(scales)
-library(hrbrthemes)
+
 
 
 # 370031 
@@ -20,7 +20,6 @@ i <- 1:400
 i <- i*1000
 
 URL <- paste0("https://www.theses.fr/?q=&fq=dateSoutenance:[1965-01-01T23:59:59Z%2BTO%2B2018-12-31T23:59:59Z]&checkedfacets=&start=",i, "&sort=none&status=status:soutenue&access=&prevision=&filtrepersonne=&zone1=titreRAs&val1=&op1=AND&zone2=auteurs&val2=&op2=AND&zone3=etabSoutenances&val3=&op3=AND&zone4=dateSoutenance&val4a=&val4b=&type=lng=&checkedfacets=&format=csv")
-
 
 # map(URL, getURL) %>% write.csv(.,"./1_raw_data/SERP_2.csv")
 
@@ -46,27 +45,30 @@ colnames(thesis) <- c("author", "author_id", "title",
 # Get year, month and week onf the day
 thesis2 <- thesis %>% 
   select(-whatever) %>% 
-  filter(!str_detect(online, "Accessible en ligne")) %>% 
+  filter(!str_detect(online, 
+                     pattern = "Accessible en ligne")) %>% 
   mutate(author          = str_to_title(author),
          thesis_advisor1 = str_to_title(thesis_advisor1),
          thesis_advisor2 = str_to_title(thesis_advisor2)) %>% 
   filter(title != "",
-         status == "soutenue",
-         !str_detect("discipline")) %>% 
+         status == "soutenue") %>% 
   mutate(date_first_registration = dmy(date_first_registration),
          date_defense            = dmy(date_defense),
          date_update             = dmy(date_update),
          date_upload             = dmy(date_upload)) %>% 
   mutate(year_defense  = year(date_defense),
-         month_defense = month(date_defense, label = TRUE, abbr = FALSE),
-         day_defense   = wday(date_defense,  label = TRUE, abbr = FALSE)) %>% 
+         month_defense = month(date_defense, 
+                               label = TRUE, 
+                               abbr = FALSE),
+         day_defense   = wday(date_defense,  
+                              label = TRUE, 
+                              abbr = FALSE,
+                              week_start = getOption("lubridate.week.start", 1))) %>% 
   mutate(title = str_replace(title, "\"\"", "")) %>% 
   mutate(title = str_replace(title, "\"", "")) %>% 
   
-  filter(!str_detect(title, "Fa yan kan zhong guo"))
+  filter(!str_detect(title, pattern = "Fa yan kan zhong guo"))
 
-
-thesis_sampled <- sample_n(thesis2, 4000)
 
 
 # Save
@@ -77,13 +79,8 @@ write.table(thesis2,
             dec = ".",
             row.names = FALSE)
 
-
-write.table(thesis_sampled, 
-            "./2_clean_data/thesis_sampled.csv",
-            quote = FALSE,
-            sep = ";",
-            dec = ".",
-            row.names = FALSE)
+save(thesis2,
+     file = "./2_clean_data/thesis.RData")
 
 
 

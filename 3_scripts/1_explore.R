@@ -24,7 +24,7 @@ thesis %>%
 # OMG, the disciplines are messed up...
 # Let's try to improve it
 
-thesis <- thesis %>% 
+thesis_clean <- thesis_clean %>% 
   mutate(discipline = str_to_lower(discipline)) %>% 
   mutate(discipline_clean1 = case_when(
     str_detect(discipline, "chimi|biochim") ~ "Chimie",
@@ -43,7 +43,7 @@ thesis <- thesis %>%
     TRUE ~ "Other")) 
 
 
-thesis %>% 
+thesis_clean %>% 
   group_by(discipline_clean1) %>% 
   count() %>% 
   arrange(desc(n)) %>% View
@@ -107,7 +107,6 @@ thesis %>%
 
 # Should probably take the proportions per discipline...
 # and reorder the damned factors.
-
 
 
 # Evolution data ----------------------------------------------------------
